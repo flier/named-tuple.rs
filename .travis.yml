@@ -1,0 +1,10 @@
+language: rust
+matrix:
+  include:
+    - rust: stable
+    - os: osx
+    - rust: beta
+    - rust: nightly
+
+script:
+  - cargo test
