@@ -38,7 +38,13 @@ named_tuple!(
     }
 );
 
+named_tuple!(
+    #[derive(Copy, Debug)]
+    struct Endpoint(host, port);
+);
+
 fn main() {
+    /// structs with named fields
     let mut human = Human::new("alice", 18);
 
     assert_eq!(Human::field_names(), &["name", "age"]);
@@ -62,6 +68,26 @@ fn main() {
     let t: (&str, usize) = human.into();
 
     assert_eq!(t, ("bob", 20));
+
+    // tuple structs
+    let mut endpoint = Endpoint::new("localhost", 80);
+
+    assert_eq!(endpoint.field_names(), &["host", "port"]);
+    assert_eq!(endpoint.fields(), (("host", "localhost"), ("port", 80)));
+    assert_eq!(endpoint.field_values(), ("localhost", 80));
+
+    assert_eq!(endpoint.host(), "localhost");
+    assert_eq!(endpoint.port(), 80);
+
+    assert_eq!(
+        format!("{:?}", endpoint),
+        "Endpoint { host: \"localhost\", port: 80 }"
+    );
+
+    endpoint.set_host("google.com");
+    endpoint.set_port(443);
+
+    assert_eq!(("google.com", 443), endpoint.into());
 }
 ```
 

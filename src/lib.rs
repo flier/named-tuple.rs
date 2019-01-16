@@ -8,10 +8,16 @@
 //! # #[macro_use] extern crate named_tuple;
 //! # use named_tuple::named_tuple;
 //! named_tuple!(
+//!     #[derive(Clone, Copy)]
 //!     struct Human<'a> {
 //!         name: &'a str,
 //!         age: usize,
 //!     }
+//! );
+//!
+//! named_tuple!(
+//!     #[derive(Clone, Copy)]
+//!     struct Endpoint(host, port);
 //! );
 //!
 //! fn main() {
@@ -20,6 +26,12 @@
 //!     assert_eq!(human.name(), "alice");
 //!     assert_eq!(human.age(), 18);
 //!     assert_eq!(human.field_values(), ("alice", 18));
+//!
+//!     let mut endpoint = Endpoint::new("localhost", 80);
+//!
+//!     assert_eq!(endpoint.host(), "localhost");
+//!     assert_eq!(endpoint.port(), 80);
+//!
 //! }
 //! ```
 //!
@@ -33,6 +45,7 @@
 //! # use named_tuple::named_tuple;
 //! mod example {
 //!     named_tuple!(
+//!         #[derive(Clone, Copy)]
 //!         pub struct Human<'a> {
 //!             pub name: &'a str,
 //!           # pub
@@ -64,6 +77,43 @@
 //!     }
 //! );
 //! # fn main() {}
+//! ```
+//!
+//! By default, the field getter will return reference of value.
+//!
+//! ```
+//! # #[macro_use] extern crate named_tuple;
+//! # use named_tuple::named_tuple;
+//! named_tuple!(
+//!     struct Endpoint(host, port);
+//! );
+//!
+//! fn main() {
+//!     let mut endpoint = Endpoint::new("localhost", 80);
+//!
+//!     assert_eq!(*endpoint.host(), "localhost");  // compare &&str to &str
+//!     assert_eq!(*endpoint.port(), 80);           // compare &{integer} to {integer}
+//!
+//! }
+//! ```
+//!
+//! You could add `#[derive(Clone, Copy)]` attribute to force it return value.
+//!
+//! ```
+//! # #[macro_use] extern crate named_tuple;
+//! # use named_tuple::named_tuple;
+//! named_tuple!(
+//!     #[derive(Clone, Copy)]
+//!     struct Endpoint(host, port);
+//! );
+//!
+//! fn main() {
+//!     let mut endpoint = Endpoint::new("localhost", 80);
+//!
+//!     assert_eq!(endpoint.host(), "localhost");
+//!     assert_eq!(endpoint.port(), 80);
+//!
+//! }
 //! ```
 //!
 //! # Trait implementations
@@ -123,7 +173,7 @@
 //! fn main() {
 //!     let mut human = Human::new("alice", 18);
 //!
-//!     assert_eq!(Human::field_names(), &["name", "age"]);
+//!     assert_eq!(human.field_names(), &["name", "age"]);
 //!     assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
 //!     assert_eq!(human.field_values(), ("alice", 18));
 //!
@@ -163,8 +213,8 @@ use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    braced, parse_macro_input, token, Attribute, Ident, Lifetime, Meta, MetaList, NestedMeta, Path,
-    Result, Token, Type, Visibility,
+    braced, parenthesized, parse_macro_input, token, Attribute, Ident, Lifetime, Meta, MetaList,
+    NestedMeta, Path, Result, Token, Type, Visibility,
 };
 
 /// The macro used to generate tuple with named fields.
@@ -184,15 +234,12 @@ use syn::{
 /// fn main() {
 ///     let mut human = Human::new("alice", 18);
 ///
-///     assert_eq!(Human::field_names(), &["name", "age"]);
+///     assert_eq!(human.field_names(), &["name", "age"]);
 ///     assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
 ///     assert_eq!(human.field_values(), ("alice", 18));
 ///
 ///     assert_eq!(human.name(), "alice");
 ///     assert_eq!(human.age(), 18);
-///
-///     assert_eq!((human.0).0, "alice");
-///     assert_eq!((human.0).1, 18);
 ///
 ///     assert_eq!(format!("{:?}", human), "Human { name: \"alice\", age: 18 }");
 ///
@@ -207,6 +254,35 @@ use syn::{
 ///     assert_eq!(t, ("bob", 20));
 /// }
 /// ```
+///
+/// If you don't care the field type, just use the tuple struct style.
+///
+/// ```
+/// # #[macro_use] extern crate named_tuple;
+/// # use named_tuple::named_tuple;
+/// named_tuple!(
+///     #[derive(Clone, Copy, Debug)]
+///     struct Endpoint(host, port);
+/// );
+///
+/// fn main() {
+///     let mut endpoint = Endpoint::new("localhost", 80);
+///
+///     assert_eq!(endpoint.field_names(), &["host", "port"]);
+///     assert_eq!(endpoint.fields(), (("host", "localhost"), ("port", 80)));
+///     assert_eq!(endpoint.field_values(), ("localhost", 80));
+///
+///     assert_eq!(endpoint.host(), "localhost");
+///     assert_eq!(endpoint.port(), 80);
+///
+///     assert_eq!(format!("{:?}", endpoint), "Endpoint { host: \"localhost\", port: 80 }");
+///
+///     endpoint.set_host("google.com");
+///     endpoint.set_port(443);
+///
+///     assert_eq!(("google.com", 443), endpoint.into());
+/// }
+/// ```
 #[proc_macro]
 pub fn named_tuple(input: TokenStream) -> TokenStream {
     let NamedTuple {
@@ -215,8 +291,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         _struct_token,
         name,
         lifetimes,
-        _brace_token,
-        fields,
+        data,
     } = parse_macro_input!(input as NamedTuple);
 
     let derive = attrs
@@ -241,6 +316,12 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             .into_iter()
         })
         .collect::<Vec<_>>();
+
+    let as_ref = if derive.iter().any(|meta| meta.eq("Copy")) {
+        None
+    } else {
+        Some(quote! { & })
+    };
 
     let attrs = attrs
         .into_iter()
@@ -291,55 +372,99 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
-    let tuple_type = {
-        let field_types = fields.iter().map(|field| &field.ty);
+    let (need_type_bound, generics, name, fields) = match data {
+        Data::Struct { fields, .. } => {
+            let generics = lifetimes.map(|lifetimes| {
+                quote! {
+                    #lifetimes
+                }
+            });
+            let fields = fields
+                .into_iter()
+                .map(|field| (field.vis, field.name, field.ty))
+                .collect::<Vec<_>>();
 
-        quote! { (#(#field_types),*) }
-    };
-    let field_accessors = fields.iter().enumerate().map(|(idx, field)| {
-        let vis = &field.vis;
-        let field_ty = &field.ty;
-        let getter = &field.name;
-        let setter = Ident::new(&format!("set_{}", field.name), Span::call_site());
-
-        quote! {
-            #vis fn #getter(&self) -> #field_ty {
-                (self.0).#idx
-            }
-            #vis fn #setter(&mut self, v: #field_ty) {
-                (self.0).#idx = v;
-            }
+            (false, generics, name, fields)
         }
-    });
+        Data::Tuple { fields, .. } => {
+            let generics = {
+                let types = (0..fields.len())
+                    .map(|idx| Ident::new(&format!("T{}", idx), Span::call_site()))
+                    .collect::<Vec<_>>();
+
+                Some(quote! { < #(#types),* > })
+            };
+
+            let fields = fields
+                .into_iter()
+                .enumerate()
+                .map(|(idx, field)| {
+                    let ty: Type = syn::parse_str(&format!("T{}", idx)).unwrap();
+
+                    (field.vis, field.name, ty)
+                })
+                .collect::<Vec<_>>();
+
+            (true, generics, name, fields)
+        }
+    };
+    let where_clause = if as_ref.is_none() {
+        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Copy });
+
+        Some(quote! { where #(#type_bounds),* })
+    } else {
+        None
+    };
+
+    let tuple_type = {
+        let types = fields.iter().map(|(_, _, ty)| ty);
+
+        quote! { (#(#types),*) }
+    };
+
+    let field_accessors = fields
+        .iter()
+        .enumerate()
+        .map(|(idx, (vis, name, field_ty))| {
+            let getter = &name;
+            let setter = Ident::new(&format!("set_{}", name), Span::call_site());
+
+            quote! {
+                #vis fn #getter(&self) -> #as_ref #field_ty {
+                    #as_ref ((self.0).#idx)
+                }
+                #vis fn #setter(&mut self, v: #field_ty) {
+                    (self.0).#idx = v;
+                }
+            }
+        });
     let method_new = {
-        let fields = &fields;
-        let field_names = fields.iter().map(|field| &field.name);
+        let args = fields.iter().map(|(_, name, ty)| quote! { #name : #ty});
+        let names = fields.iter().map(|(_, name, _)| name);
 
         quote! {
-            pub fn new(#(#fields),*) -> #name #lifetimes {
-                #name((#(#field_names),*))
+            pub fn new(#(#args),*) -> #name #generics {
+                #name((#(#names),*))
             }
         }
     };
     let method_field_names = {
-        let field_names = fields.iter().map(|field| field.name.to_string());
+        let field_names = fields.iter().map(|(_, name, _)| name.to_string());
 
         quote! {
-            pub fn field_names() -> &'static [&'static str] {
+            pub fn field_names(&self) -> &'static [&'static str] {
                 &[#(#field_names),*]
             }
         }
     };
     let method_fields = {
-        let field_types = fields.iter().map(|field| {
-            let ty = &field.ty;
-
-            quote! { (&'static str, #ty) }
+        let field_types = fields.iter().map(|(_, _, ty)| {
+            quote! { (&'static str, #as_ref #ty) }
         });
-        let field_values = fields.iter().enumerate().map(|(idx, field)| {
-            let name = field.name.to_string();
+        let field_values = fields.iter().enumerate().map(|(idx, (_, name, _))| {
+            let name = name.to_string();
 
-            quote! { (#name, (self.0). #idx ) }
+            quote! { (#name, #as_ref ((self.0). #idx) ) }
         });
 
         quote! {
@@ -349,23 +474,33 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         }
     };
     let method_field_values = quote! {
-        pub fn field_values(&self) -> #tuple_type {
-            self.0
+        pub fn field_values(&self) -> #as_ref #tuple_type {
+            #as_ref self.0
         }
     };
     let impl_debug = if derive.iter().any(|meta| meta.eq("Debug")) {
-        let fields = fields.iter().enumerate().map(|(idx, field)| {
-            let field_name = field.name.to_string();
+        let where_clause = if need_type_bound {
+            let types = fields
+                .iter()
+                .map(|(_, _, ty)| quote! { #ty : ::std::fmt::Debug });
+
+            Some(quote! {
+                where #(#types),*
+            })
+        } else {
+            None
+        };
+        let struct_name = name.to_string();
+        let fields = fields.iter().enumerate().map(|(idx, (_, name, _))| {
+            let field_name = name.to_string();
 
             quote! {
                 .field(#field_name, &(self.0).#idx)
             }
         });
 
-        let struct_name = name.to_string();
-
         Some(quote! {
-            impl #lifetimes ::std::fmt::Debug for #name #lifetimes {
+            impl #generics ::std::fmt::Debug for #name #generics #where_clause {
                 fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                     f.debug_struct(#struct_name) #(#fields)* .finish()
                 }
@@ -375,21 +510,21 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         None
     };
     let impl_from = quote! {
-        impl #lifetimes From<#tuple_type> for #name #lifetimes {
+        impl #generics From<#tuple_type> for #name #generics {
             fn from(t: #tuple_type) -> Self {
                 #name(t)
             }
         }
     };
     let impl_into = quote! {
-        impl #lifetimes Into<#tuple_type> for #name #lifetimes {
+        impl #generics Into<#tuple_type> for #name #generics {
             fn into(self) -> #tuple_type {
                 self.0
             }
         }
     };
     let impl_deref = quote! {
-        impl #lifetimes ::std::ops::Deref for #name #lifetimes {
+        impl #generics ::std::ops::Deref for #name #generics {
             type Target = #tuple_type;
 
             fn deref(&self) -> &Self::Target {
@@ -398,7 +533,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         }
     };
     let impl_deref_mut = quote! {
-        impl #lifetimes ::std::ops::DerefMut for #name #lifetimes {
+        impl #generics ::std::ops::DerefMut for #name #generics {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
             }
@@ -406,7 +541,26 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     };
     let impl_partial_eq = if derive.iter().any(|meta| meta.eq("PartialEq")) {
         Some(quote! {
-            impl #lifetimes ::std::cmp::PartialEq<#tuple_type> for #name #lifetimes {
+            impl #generics ::std::cmp::PartialEq<#tuple_type> for #name #generics {
+                fn eq(&self, other: & #tuple_type) -> bool {
+                    (self.0).eq(other)
+                }
+            }
+        })
+    } else if need_type_bound {
+        let type_bounds = fields
+            .iter()
+            .map(|(_, _, ty)| quote! { #ty : ::std::cmp::PartialEq });
+        let where_clause = quote! { where #(#type_bounds),* };
+
+        Some(quote! {
+            impl #generics ::std::cmp::PartialEq for #name #generics #where_clause {
+                fn eq(&self, other: &Self) -> bool {
+                    (self.0).eq(&other.0)
+                }
+            }
+
+            impl #generics ::std::cmp::PartialEq<#tuple_type> for #name #generics #where_clause {
                 fn eq(&self, other: & #tuple_type) -> bool {
                     (self.0).eq(other)
                 }
@@ -417,9 +571,78 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     };
     let impl_partial_ord = if derive.iter().any(|meta| meta.eq("PartialOrd")) {
         Some(quote! {
-            impl #lifetimes ::std::cmp::PartialOrd<#tuple_type> for #name #lifetimes {
+            impl #generics ::std::cmp::PartialOrd<#tuple_type> for #name #generics {
                 fn partial_cmp(&self, other: & #tuple_type) -> Option<::std::cmp::Ordering> {
                     (self.0).partial_cmp(other)
+                }
+            }
+        })
+    } else if need_type_bound {
+        let type_bounds = fields
+            .iter()
+            .map(|(_, _, ty)| quote! { #ty : ::std::cmp::PartialOrd });
+        let where_clause = quote! { where #(#type_bounds),* };
+
+        Some(quote! {
+            impl #generics ::std::cmp::PartialOrd for #name #generics #where_clause {
+                fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+                    (self.0).partial_cmp(&other.0)
+                }
+            }
+
+            impl #generics ::std::cmp::PartialOrd<#tuple_type> for #name #generics #where_clause {
+                fn partial_cmp(&self, other: & #tuple_type) -> Option<::std::cmp::Ordering> {
+                    (self.0).partial_cmp(other)
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let impl_clone = if need_type_bound && !derive.iter().any(|meta| meta.eq("Clone")) {
+        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Clone });
+
+        Some(quote! {
+            impl #generics Clone for #name #generics where #(#type_bounds),* {
+                fn clone(&self) -> Self {
+                    #name(self.0.clone())
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let impl_copy = if need_type_bound && !derive.iter().any(|meta| meta.eq("Copy")) {
+        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Copy });
+
+        Some(quote! {
+            impl #generics Copy for #name #generics where #(#type_bounds),* {}
+        })
+    } else {
+        None
+    };
+    let impl_default = if need_type_bound && !derive.iter().any(|meta| meta.eq("Default")) {
+        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Default });
+
+        Some(quote! {
+            impl #generics Default for #name #generics where #(#type_bounds),* {
+                fn default() -> Self {
+                    #name(Default::default())
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let impl_hash = if need_type_bound && !derive.iter().any(|meta| meta.eq("Hash")) {
+        let type_bounds = fields
+            .iter()
+            .map(|(_, _, ty)| quote! { #ty : ::std::hash::Hash });
+
+        Some(quote! {
+            impl #generics ::std::hash::Hash for #name #generics where #(#type_bounds),* {
+                fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
+                    self.0.hash(state)
                 }
             }
         })
@@ -430,9 +653,9 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[repr(transparent)]
         #(#attrs)*
-        #vis struct #name #lifetimes (#tuple_type);
+        #vis struct #name #generics (#tuple_type);
 
-        impl #lifetimes #name #lifetimes{
+        impl #generics #name #generics #where_clause {
             #(#field_accessors)*
 
             #method_new
@@ -448,9 +671,13 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         #impl_deref_mut
         #impl_partial_eq
         #impl_partial_ord
+        #impl_clone
+        #impl_copy
+        #impl_default
+        #impl_hash
     };
 
-    //eprintln!("{}", expanded.to_string());
+    // eprintln!("{}", expanded.to_string());
 
     TokenStream::from(expanded)
 }
@@ -461,8 +688,19 @@ struct NamedTuple {
     _struct_token: Token![struct],
     name: Ident,
     lifetimes: Option<Lifetimes>,
-    _brace_token: token::Brace,
-    fields: Punctuated<Field, Token![,]>,
+    data: Data,
+}
+
+enum Data {
+    Struct {
+        _brace_token: token::Brace,
+        fields: Punctuated<StructField, Token![,]>,
+    },
+    Tuple {
+        _paren_token: token::Paren,
+        fields: Punctuated<TupleField, Token![,]>,
+        _semi_tokne: Token![;],
+    },
 }
 
 struct Lifetimes {
@@ -471,16 +709,33 @@ struct Lifetimes {
     _gt_token: Token![>],
 }
 
-struct Field {
+struct StructField {
     vis: Visibility,
     name: Ident,
     colon_token: Token![:],
     ty: Type,
 }
 
+struct TupleField {
+    vis: Visibility,
+    name: Ident,
+}
+
 impl fmt::Debug for NamedTuple {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("NamedTuple")
+            .field(
+                "attributes",
+                &self
+                    .attrs
+                    .iter()
+                    .map(|attr| {
+                        let expanded = quote! { #attr };
+
+                        expanded.to_string()
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .field("visibility", {
                 let vis = &self.vis;
 
@@ -488,15 +743,35 @@ impl fmt::Debug for NamedTuple {
 
                 &expanded.to_string()
             })
-            .field("name", &self.name)
-            .field("fields", &self.fields.iter().collect::<Vec<_>>())
+            .field("name", &self.name.to_string())
+            .field("data", &self.data)
             .finish()
     }
 }
 
-impl fmt::Debug for Field {
+impl fmt::Debug for Data {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Field")
+        match self {
+            Data::Struct { fields, .. } => f
+                .debug_struct("Struct")
+                .field("fields", &fields.iter().collect::<Vec<_>>())
+                .finish(),
+            Data::Tuple { fields, .. } => {
+                let mut t = f.debug_tuple("Tuple");
+
+                for field in fields {
+                    t.field(&field);
+                }
+
+                t.finish()
+            }
+        }
+    }
+}
+
+impl fmt::Debug for StructField {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("StructField")
             .field("visibility", {
                 let vis = &self.vis;
 
@@ -516,10 +791,23 @@ impl fmt::Debug for Field {
     }
 }
 
+impl fmt::Debug for TupleField {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("TupleField")
+            .field("visibility", {
+                let vis = &self.vis;
+
+                let expanded = quote! { #vis };
+
+                &expanded.to_string()
+            })
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
 impl Parse for NamedTuple {
     fn parse(input: ParseStream) -> Result<Self> {
-        let content;
-
         Ok(NamedTuple {
             attrs: input.call(Attribute::parse_outer)?,
             vis: input.parse()?,
@@ -530,9 +818,33 @@ impl Parse for NamedTuple {
             } else {
                 None
             },
-            _brace_token: braced!(content in input),
-            fields: content.parse_terminated(Field::parse)?,
+            data: input.parse()?,
         })
+    }
+}
+
+impl Parse for Data {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let lookahead = input.lookahead1();
+
+        if lookahead.peek(token::Brace) {
+            let content;
+
+            Ok(Data::Struct {
+                _brace_token: braced!(content in input),
+                fields: content.parse_terminated(StructField::parse)?,
+            })
+        } else if lookahead.peek(token::Paren) {
+            let content;
+
+            Ok(Data::Tuple {
+                _paren_token: parenthesized!(content in input),
+                fields: content.parse_terminated(TupleField::parse)?,
+                _semi_tokne: input.parse()?,
+            })
+        } else {
+            Err(lookahead.error())
+        }
     }
 }
 
@@ -556,9 +868,9 @@ impl Parse for Lifetimes {
     }
 }
 
-impl Parse for Field {
+impl Parse for StructField {
     fn parse(input: ParseStream) -> Result<Self> {
-        Ok(Field {
+        Ok(StructField {
             vis: input.parse()?,
             name: input.parse()?,
             colon_token: input.parse()?,
@@ -567,9 +879,18 @@ impl Parse for Field {
     }
 }
 
-impl ToTokens for Field {
+impl Parse for TupleField {
+    fn parse(input: ParseStream) -> Result<Self> {
+        Ok(TupleField {
+            vis: input.parse()?,
+            name: input.parse()?,
+        })
+    }
+}
+
+impl ToTokens for StructField {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let Field {
+        let StructField {
             vis: _,
             name,
             colon_token,
@@ -581,6 +902,14 @@ impl ToTokens for Field {
         };
 
         expanded.to_tokens(tokens)
+    }
+}
+
+impl ToTokens for TupleField {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let TupleField { vis: _, name } = self;
+
+        name.to_tokens(tokens)
     }
 }
 
