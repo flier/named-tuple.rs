@@ -110,7 +110,7 @@
 //! Besides, all the fields have a getter and setter method.
 //!
 //! ```
-//! //! # #[macro_use] extern crate named_tuple;
+//! # #[macro_use] extern crate named_tuple;
 //! # use named_tuple::named_tuple;
 //! named_tuple!(
 //!     #[derive(Clone, Copy, Debug, Default, Hash, PartialEq)]
