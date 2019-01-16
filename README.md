@@ -3,6 +3,11 @@ named-tuple.rs
 
 A macro for declaring a `struct` that manages a set of fields in a `tuple`.
 
+[![Travis-CI Status](https://travis-ci.org/flier/named-tuple.rs.svg?branch=master)](https://travis-ci.org/flier/named-tuple.rs)
+[![Latest version](https://img.shields.io/crates/v/named_tuple.svg)](https://crates.io/crates/named_tuple)
+[![Documentation](https://docs.rs/named_tuple/badge.svg)](https://docs.rs/named_tuple)
+[![License](https://img.shields.io/crates/l/named_tuple.svg)](https://github.com/flier/named-tuple.rs#license)
+
 # Getting Started
 
 [named-tuple.rs is available on crates.io](https://crates.io/crates/named_tuple).
