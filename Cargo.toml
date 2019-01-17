@@ -1,6 +1,6 @@
 [package]
 name = "named_tuple"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Flier Lu <flier.lu@gmail.com>"]
 license = "MIT/Apache-2.0"
 
