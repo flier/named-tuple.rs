@@ -148,6 +148,48 @@
 //!
 //! Additional traits can be derived by providing an explicit `derive` attribute on `struct`.
 //!
+//! ## Serde
+//!
+//! For the tuple structs, the `serde` support is disabled by default,
+//! you need build `named_tuple` with `serde` feature in `Cargo.toml`
+//!
+//! ```toml
+//! [dependencies]
+//! named_tuple = { version = "0.1", features = ["serde"] }
+//! ```
+//!
+//! Then the `Serialize` and `Deserialize` will be implemented when all tuple field type implement it.
+//!
+//! ```
+//! # #[macro_use] extern crate named_tuple;
+//! # #[macro_use] extern crate serde_derive;
+//! # use std::net::{ToSocketAddrs};
+//! # use named_tuple::named_tuple;
+//! # #[cfg(feature = "serde")]
+//! named_tuple!(
+//!     #[derive(Debug, PartialEq, Serialize, Deserialize)]
+//!     struct Endpoint<'a> {
+//!         host: &'a str,
+//!         port: u16,
+//!     }
+//! );
+//!
+//! # #[cfg(not(feature = "serde"))]
+//! # fn main() {}
+//! # #[cfg(feature = "serde")]
+//! fn main() {
+//!     let endpoint = Endpoint::new("localhost", 80);
+//!
+//!     let json = serde_json::to_string(&endpoint).unwrap();
+//!
+//!     assert_eq!(json, "[\"localhost\",80]");
+//!
+//!     let endpoint2: Endpoint = serde_json::from_str(&json).unwrap();
+//!
+//!     assert_eq!(endpoint, endpoint2);
+//! }
+//! ```
+//!
 //! # Methods
 //!
 //! The following methods are defined for the generated struct:
@@ -213,8 +255,8 @@ use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    braced, parenthesized, parse_macro_input, token, Attribute, Ident, Lifetime, Meta, MetaList,
-    NestedMeta, Path, Result, Token, Type, Visibility,
+    braced, parenthesized, parse_macro_input, parse_quote, token, Attribute, GenericParam,
+    Generics, Ident, Lifetime, Meta, MetaList, NestedMeta, Path, Result, Token, Type, Visibility,
 };
 
 /// The macro used to generate tuple with named fields.
@@ -290,7 +332,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         vis,
         _struct_token,
         name,
-        lifetimes,
+        mut generics,
         data,
     } = parse_macro_input!(input as NamedTuple);
 
@@ -342,6 +384,8 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
                                 .filter(|meta| {
                                     if let NestedMeta::Meta(meta) = meta {
                                         meta.name() != "Debug"
+                                            && meta.name() != "Serialize"
+                                            && meta.name() != "Deserialize"
                                     } else {
                                         true
                                     }
@@ -374,11 +418,6 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
 
     let (need_type_bound, generics, name, fields) = match data {
         Data::Struct { fields, .. } => {
-            let generics = lifetimes.map(|lifetimes| {
-                quote! {
-                    #lifetimes
-                }
-            });
             let fields = fields
                 .into_iter()
                 .map(|field| (field.vis, field.name, field.ty))
@@ -387,13 +426,11 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             (false, generics, name, fields)
         }
         Data::Tuple { fields, .. } => {
-            let generics = {
-                let types = (0..fields.len())
+            generics.params.extend(
+                (0..fields.len())
                     .map(|idx| Ident::new(&format!("T{}", idx), Span::call_site()))
-                    .collect::<Vec<_>>();
-
-                Some(quote! { < #(#types),* > })
-            };
+                    .map(|ident| GenericParam::Type(ident.into())),
+            );
 
             let fields = fields
                 .into_iter()
@@ -408,12 +445,21 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             (true, generics, name, fields)
         }
     };
-    let where_clause = if as_ref.is_none() {
-        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Copy });
+    let append_type_bounds = |callback: fn(ty: &Type) -> TokenStream2| {
+        let mut generics = generics.clone();
 
-        Some(quote! { where #(#type_bounds),* })
-    } else {
-        None
+        let where_clause: syn::WhereClause = {
+            let type_bounds = fields.iter().map(|(_, _, ty)| callback(ty));
+
+            parse_quote! { where #(#type_bounds),* }
+        };
+
+        generics
+            .make_where_clause()
+            .predicates
+            .extend(where_clause.predicates);
+
+        generics
     };
 
     let tuple_type = {
@@ -438,12 +484,13 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
                 }
             }
         });
+
     let method_new = {
         let args = fields.iter().map(|(_, name, ty)| quote! { #name : #ty});
         let names = fields.iter().map(|(_, name, _)| name);
 
         quote! {
-            pub fn new(#(#args),*) -> #name #generics {
+            pub fn new(#(#args),*) -> Self {
                 #name((#(#names),*))
             }
         }
@@ -478,18 +525,34 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             #as_ref self.0
         }
     };
-    let impl_debug = if derive.iter().any(|meta| meta.eq("Debug")) {
-        let where_clause = if need_type_bound {
-            let types = fields
-                .iter()
-                .map(|(_, _, ty)| quote! { #ty : ::std::fmt::Debug });
 
-            Some(quote! {
-                where #(#types),*
-            })
+    let impl_tuple = {
+        let generics = if as_ref.is_none() {
+            append_type_bounds(|ty| quote! { #ty : Copy })
         } else {
-            None
+            generics.clone()
         };
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+        quote! {
+            impl #impl_generics #name #ty_generics #where_clause {
+                #(#field_accessors)*
+
+                #method_new
+                #method_field_names
+                #method_fields
+                #method_field_values
+            }
+        }
+    };
+    let impl_debug = if derive.iter().any(|meta| meta.eq("Debug")) {
+        let generics = if need_type_bound {
+            append_type_bounds(|ty| quote! { #ty : ::std::fmt::Debug })
+        } else {
+            generics.clone()
+        };
+
         let struct_name = name.to_string();
         let fields = fields.iter().enumerate().map(|(idx, (_, name, _))| {
             let field_name = name.to_string();
@@ -499,8 +562,10 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             }
         });
 
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
         Some(quote! {
-            impl #generics ::std::fmt::Debug for #name #generics #where_clause {
+            impl #impl_generics ::std::fmt::Debug for #name #ty_generics #where_clause {
                 fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                     f.debug_struct(#struct_name) #(#fields)* .finish()
                 }
@@ -509,22 +574,25 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     } else {
         None
     };
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let impl_from = quote! {
-        impl #generics From<#tuple_type> for #name #generics {
+        impl #impl_generics From<#tuple_type> for #name #ty_generics #where_clause {
             fn from(t: #tuple_type) -> Self {
                 #name(t)
             }
         }
     };
     let impl_into = quote! {
-        impl #generics Into<#tuple_type> for #name #generics {
+        impl #impl_generics Into<#tuple_type> for #name #ty_generics #where_clause {
             fn into(self) -> #tuple_type {
                 self.0
             }
         }
     };
     let impl_deref = quote! {
-        impl #generics ::std::ops::Deref for #name #generics {
+        impl #impl_generics ::std::ops::Deref for #name #ty_generics #where_clause {
             type Target = #tuple_type;
 
             fn deref(&self) -> &Self::Target {
@@ -533,7 +601,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         }
     };
     let impl_deref_mut = quote! {
-        impl #generics ::std::ops::DerefMut for #name #generics {
+        impl #impl_generics ::std::ops::DerefMut for #name #ty_generics #where_clause {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
             }
@@ -541,26 +609,25 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     };
     let impl_partial_eq = if derive.iter().any(|meta| meta.eq("PartialEq")) {
         Some(quote! {
-            impl #generics ::std::cmp::PartialEq<#tuple_type> for #name #generics {
+            impl #impl_generics ::std::cmp::PartialEq<#tuple_type> for #name #ty_generics #where_clause {
                 fn eq(&self, other: & #tuple_type) -> bool {
                     (self.0).eq(other)
                 }
             }
         })
     } else if need_type_bound {
-        let type_bounds = fields
-            .iter()
-            .map(|(_, _, ty)| quote! { #ty : ::std::cmp::PartialEq });
-        let where_clause = quote! { where #(#type_bounds),* };
+        let generics = append_type_bounds(|ty| quote! { #ty : ::std::cmp::PartialEq });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics ::std::cmp::PartialEq for #name #generics #where_clause {
+            impl #impl_generics ::std::cmp::PartialEq for #name #ty_generics #where_clause {
                 fn eq(&self, other: &Self) -> bool {
                     (self.0).eq(&other.0)
                 }
             }
 
-            impl #generics ::std::cmp::PartialEq<#tuple_type> for #name #generics #where_clause {
+            impl #impl_generics ::std::cmp::PartialEq<#tuple_type> for #name #ty_generics #where_clause {
                 fn eq(&self, other: & #tuple_type) -> bool {
                     (self.0).eq(other)
                 }
@@ -571,26 +638,25 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     };
     let impl_partial_ord = if derive.iter().any(|meta| meta.eq("PartialOrd")) {
         Some(quote! {
-            impl #generics ::std::cmp::PartialOrd<#tuple_type> for #name #generics {
+            impl #impl_generics ::std::cmp::PartialOrd<#tuple_type> for #name #ty_generics #where_clause {
                 fn partial_cmp(&self, other: & #tuple_type) -> Option<::std::cmp::Ordering> {
                     (self.0).partial_cmp(other)
                 }
             }
         })
     } else if need_type_bound {
-        let type_bounds = fields
-            .iter()
-            .map(|(_, _, ty)| quote! { #ty : ::std::cmp::PartialOrd });
-        let where_clause = quote! { where #(#type_bounds),* };
+        let generics = append_type_bounds(|ty| quote! { #ty : ::std::cmp::PartialOrd });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics ::std::cmp::PartialOrd for #name #generics #where_clause {
+            impl #impl_generics ::std::cmp::PartialOrd for #name #ty_generics #where_clause {
                 fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
                     (self.0).partial_cmp(&other.0)
                 }
             }
 
-            impl #generics ::std::cmp::PartialOrd<#tuple_type> for #name #generics #where_clause {
+            impl #impl_generics ::std::cmp::PartialOrd<#tuple_type> for #name #ty_generics #where_clause {
                 fn partial_cmp(&self, other: & #tuple_type) -> Option<::std::cmp::Ordering> {
                     (self.0).partial_cmp(other)
                 }
@@ -600,10 +666,12 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         None
     };
     let impl_clone = if need_type_bound && !derive.iter().any(|meta| meta.eq("Clone")) {
-        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Clone });
+        let generics = append_type_bounds(|ty| quote! { #ty : Clone });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics Clone for #name #generics where #(#type_bounds),* {
+            impl #impl_generics Clone for #name #ty_generics #where_clause {
                 fn clone(&self) -> Self {
                     #name(self.0.clone())
                 }
@@ -613,19 +681,23 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         None
     };
     let impl_copy = if need_type_bound && !derive.iter().any(|meta| meta.eq("Copy")) {
-        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Copy });
+        let generics = append_type_bounds(|ty| quote! { #ty : Copy });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics Copy for #name #generics where #(#type_bounds),* {}
+            impl #impl_generics Copy for #name  #ty_generics #where_clause {}
         })
     } else {
         None
     };
     let impl_default = if need_type_bound && !derive.iter().any(|meta| meta.eq("Default")) {
-        let type_bounds = fields.iter().map(|(_, _, ty)| quote! { #ty : Default });
+        let generics = append_type_bounds(|ty| quote! { #ty : Default });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics Default for #name #generics where #(#type_bounds),* {
+            impl #impl_generics Default for #name  #ty_generics #where_clause {
                 fn default() -> Self {
                     #name(Default::default())
                 }
@@ -635,14 +707,89 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         None
     };
     let impl_hash = if need_type_bound && !derive.iter().any(|meta| meta.eq("Hash")) {
-        let type_bounds = fields
-            .iter()
-            .map(|(_, _, ty)| quote! { #ty : ::std::hash::Hash });
+        let generics = append_type_bounds(|ty| quote! { #ty : ::std::hash::Hash });
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         Some(quote! {
-            impl #generics ::std::hash::Hash for #name #generics where #(#type_bounds),* {
+            impl #impl_generics ::std::hash::Hash for #name #ty_generics #where_clause {
                 fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
                     self.0.hash(state)
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let impl_serialize = if cfg!(feature = "serde")
+        && (need_type_bound || derive.iter().any(|meta| meta.eq("Serialize")))
+    {
+        let generics = if need_type_bound {
+            append_type_bounds(|ty| quote! { #ty : ::serde::Serialize })
+        } else {
+            generics.clone()
+        };
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+        Some(quote! {
+            impl #impl_generics ::serde::Serialize for #name #ty_generics #where_clause {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: ::serde::Serializer,
+                {
+                    self.0.serialize(serializer)
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let impl_deserialize = if cfg!(feature = "serde")
+        && (need_type_bound || derive.iter().any(|meta| meta.eq("Deserialize")))
+    {
+        let generics = if need_type_bound {
+            append_type_bounds(|ty| quote! { #ty : ::serde::Deserialize<'de> })
+        } else {
+            generics.clone()
+        };
+
+        let (_, ty_generics, _) = generics.split_for_impl();
+
+        let mut generics = generics.clone();
+
+        let bounds = generics
+            .params
+            .iter()
+            .flat_map(|param| match param {
+                syn::GenericParam::Lifetime(syn::LifetimeDef { lifetime, .. })
+                    if lifetime.ident != "de" =>
+                {
+                    Some(lifetime.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        generics.params.insert(
+            0,
+            syn::LifetimeDef {
+                attrs: vec![],
+                lifetime: Lifetime::new("'de", Span::call_site()),
+                colon_token: None,
+                bounds,
+            }
+            .into(),
+        );
+
+        let (impl_generics, _, where_clause) = generics.split_for_impl();
+
+        Some(quote! {
+            impl #impl_generics ::serde::Deserialize<'de> for #name #ty_generics #where_clause {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: ::serde::Deserializer<'de>
+                {
+                    < #tuple_type >::deserialize(deserializer).map(#name)
                 }
             }
         })
@@ -653,17 +800,9 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[repr(transparent)]
         #(#attrs)*
-        #vis struct #name #generics (#tuple_type);
+        #vis struct #name #ty_generics (#tuple_type);
 
-        impl #generics #name #generics #where_clause {
-            #(#field_accessors)*
-
-            #method_new
-            #method_field_names
-            #method_fields
-            #method_field_values
-        }
-
+        #impl_tuple
         #impl_debug
         #impl_from
         #impl_into
@@ -675,6 +814,8 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         #impl_copy
         #impl_default
         #impl_hash
+        #impl_serialize
+        #impl_deserialize
     };
 
     // eprintln!("{}", expanded.to_string());
@@ -687,7 +828,7 @@ struct NamedTuple {
     vis: Visibility,
     _struct_token: Token![struct],
     name: Ident,
-    lifetimes: Option<Lifetimes>,
+    generics: Generics,
     data: Data,
 }
 
@@ -813,10 +954,10 @@ impl Parse for NamedTuple {
             vis: input.parse()?,
             _struct_token: input.parse()?,
             name: input.parse()?,
-            lifetimes: if input.peek(Token![<]) {
-                Some(input.parse()?)
+            generics: if input.peek(Token![<]) {
+                input.parse()?
             } else {
-                None
+                Default::default()
             },
             data: input.parse()?,
         })

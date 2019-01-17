@@ -8,3 +8,4 @@ matrix:
 
 script:
   - cargo test
+  - cargo test --features serde

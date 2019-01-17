@@ -20,6 +20,11 @@ proc-macro = true
 syn = "0.15"
 quote = "0.6"
 proc-macro2 = "0.4"
+serde = { version = "1.0", optional = true }
+
+[dev-dependencies]
+serde_derive = "1.0"
+serde_json = "1.0"
 
 [badges]
 travis-ci = { repository = "flier/named-tuple.rs" }
