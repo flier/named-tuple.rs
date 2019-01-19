@@ -216,7 +216,7 @@
 //!     let mut human = Human::new("alice", 18);
 //!
 //!     assert_eq!(human.field_names(), &["name", "age"]);
-//!     assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
+//!     assert_eq!(human.field_pairs(), (("name", "alice"), ("age", 18)));
 //!     assert_eq!(human.field_values(), ("alice", 18));
 //!
 //!     assert_eq!(human.name(), "alice");
@@ -278,7 +278,7 @@ use syn::{
 ///     let mut human = Human::new("alice", 18);
 ///
 ///     assert_eq!(human.field_names(), &["name", "age"]);
-///     assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
+///     assert_eq!(human.field_pairs(), (("name", "alice"), ("age", 18)));
 ///     assert_eq!(human.field_values(), ("alice", 18));
 ///
 ///     assert_eq!(human.name(), "alice");
@@ -312,7 +312,7 @@ use syn::{
 ///     let mut endpoint = Endpoint::new("localhost", 80);
 ///
 ///     assert_eq!(endpoint.field_names(), &["host", "port"]);
-///     assert_eq!(endpoint.fields(), (("host", "localhost"), ("port", 80)));
+///     assert_eq!(endpoint.field_pairs(), (("host", "localhost"), ("port", 80)));
 ///     assert_eq!(endpoint.field_values(), ("localhost", 80));
 ///
 ///     assert_eq!(endpoint.host(), "localhost");
@@ -460,7 +460,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         });
 
     let method_new = {
-        let args = fields.iter().map(|(_, name, ty, _)| quote! { #name : #ty});
+        let args = fields.iter().map(|(_, name, ty, _)| quote! { #name : #ty });
         let names = fields.iter().map(|(_, name, _, _)| name);
 
         quote! {
@@ -469,6 +469,16 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             }
         }
     };
+    let method_with = fields.iter().enumerate().map(|(idx, (_, name, ty, _))| {
+        let method_name = Ident::new(&format!("with_{}", name), Span::call_site());
+
+        quote! {
+            pub fn #method_name(mut self, #name : #ty) -> Self {
+                (self.0).#idx = #name;
+                self
+            }
+        }
+    });
     let method_field_names = {
         let field_names = fields.iter().map(|(_, name, _, _)| name.to_string());
 
@@ -478,7 +488,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
             }
         }
     };
-    let method_fields = {
+    let method_field_pairs = {
         let field_types = fields.iter().map(|(_, _, ty, _)| {
             quote! { (&'static str, #as_ref #ty) }
         });
@@ -489,7 +499,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         });
 
         quote! {
-            pub fn fields(&self) -> (#(#field_types),*) {
+            pub fn field_pairs(&self) -> (#(#field_types),*) {
                 (#(#field_values),*)
             }
         }
@@ -799,12 +809,13 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
 
         quote! {
             impl #impl_generics #name #ty_generics #where_clause {
-                #(#field_accessors)*
 
                 #method_new
+                #(#method_with)*
+                #(#field_accessors)*
                 #method_field_names
-                #method_fields
                 #method_field_values
+                #method_field_pairs
             }
         }
     };

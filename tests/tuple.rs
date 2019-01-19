@@ -59,7 +59,7 @@ fn test_human() {
     assert_eq!(human.age(), 18);
 
     assert_eq!(human.field_names(), &["name", "age"]);
-    assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
+    assert_eq!(human.field_pairs(), (("name", "alice"), ("age", 18)));
     assert_eq!(human.field_values(), ("alice", 18));
 
     human.set_name("bob");
@@ -84,7 +84,7 @@ fn test_pair() {
     assert_eq!(pair.second(), "bar");
 
     assert_eq!(pair.field_names(), &["first", "second"]);
-    assert_eq!(pair.fields(), (("first", "foo"), ("second", "bar")));
+    assert_eq!(pair.field_pairs(), (("first", "foo"), ("second", "bar")));
     assert_eq!(pair.field_values(), ("foo", "bar"));
 
     pair.set_first("hello");
