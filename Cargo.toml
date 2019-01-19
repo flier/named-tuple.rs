@@ -16,11 +16,17 @@ edition = "2018"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+dump = ["rustfmt-nightly", "term"]
+
 [dependencies]
-syn = "0.15"
+syn = { version = "0.15", features = ["fold"] }
 quote = "0.6"
 proc-macro2 = "0.4"
 serde = { version = "1.0", optional = true }
+rustfmt-nightly = { version = "1.0", optional = true }
+term = { version = "0.5", optional = true }
 
 [dev-dependencies]
 serde_derive = "1.0"

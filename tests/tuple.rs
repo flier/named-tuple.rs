@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate serde_derive;
+
 use std::net::ToSocketAddrs;
 
 use named_tuple::named_tuple;
@@ -18,12 +21,12 @@ named_tuple!(
 );
 
 named_tuple!(
-    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-    struct Endpoint(host, port);
+    #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+    struct Endpoint(host, port = 80);
 );
 
 named_tuple!(
-    struct EndpointByRef(host, port);
+    struct EndpointByRef(host, port = 80);
 );
 
 pub struct Foo {}
