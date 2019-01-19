@@ -1,3 +1,4 @@
+#[cfg(feature = "serde")]
 #[macro_use]
 extern crate serde_derive;
 
@@ -6,7 +7,7 @@ use std::net::ToSocketAddrs;
 use named_tuple::named_tuple;
 
 named_tuple!(
-    #[derive(Clone, Copy, Serialize, Deserialize)]
+    #[derive(Clone, Copy)]
     struct Human<'a> {
         name: &'a str,
         age: usize,
@@ -20,8 +21,15 @@ named_tuple!(
     }
 );
 
-named_tuple!(
+#[cfg(feature = "serde")]
+named_tuple!(    
     #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+    struct Endpoint(host, port = 80);
+);
+
+#[cfg(not(feature = "serde"))]
+named_tuple!(    
+    #[derive(Clone, Copy, Debug, Default)]
     struct Endpoint(host, port = 80);
 );
 
