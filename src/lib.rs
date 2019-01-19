@@ -337,7 +337,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         data,
     } = parse_macro_input!(input as NamedTuple);
 
-    let derive = attrs
+    let derive_traits = attrs
         .iter()
         .filter(|attr| attr.path.is_ident("derive"))
         .flat_map(|attr| attr.parse_meta())
@@ -360,30 +360,13 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
-    let has_derive = |name: &str| derive.iter().any(|meta| meta.eq(name));
+    let has_derive = |name: &str| derive_traits.iter().any(|meta| meta.eq(name));
 
     let as_ref = if has_derive("Copy") {
         None
     } else {
         Some(quote! { & })
     };
-
-    let mut filter = DeriveFilter(|meta| {
-        if let NestedMeta::Meta(meta) = meta {
-            meta.name() == "Debug"
-                || (cfg!(feature = "serde")
-                    && (meta.name() == "Serialize" || meta.name() == "Deserialize"))
-        } else {
-            false
-        }
-    });
-    let attrs = attrs.into_iter().map(|attr| {
-        if attr.path.is_ident("derive") {
-            filter.fold_attribute(attr)
-        } else {
-            attr
-        }
-    });
 
     let mut has_default_value = false;
     let mut has_type_bound = false;
@@ -417,6 +400,24 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         )
     })
     .collect::<Vec<_>>();
+
+    let mut filter = MetaFilter(|meta| {
+        if let NestedMeta::Meta(meta) = meta {
+            !(meta.name() == "Debug"
+                || (cfg!(feature = "serde")
+                    && (meta.name() == "Serialize" || meta.name() == "Deserialize"))
+                || (has_default_value && meta.name() == "Default"))
+        } else {
+            false
+        }
+    });
+    let attrs = attrs.into_iter().map(|attr| {
+        if attr.path.is_ident("derive") {
+            filter.fold_attribute(attr)
+        } else {
+            attr
+        }
+    });
 
     let append_type_bounds = |callback: fn(ty: &Type) -> TokenStream2| {
         let mut generics = generics.clone();
@@ -644,7 +645,47 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     } else {
         None
     };
-    let impl_default = if has_type_bound && !has_derive("Default") {
+    let impl_default = if has_default_value {
+        let generics = if has_type_bound {
+            let mut generics = generics.clone();
+
+            let where_clause: syn::WhereClause = {
+                let type_bounds = fields.iter().flat_map(|(_, _, ty, default)| {
+                    if default.is_none() {
+                        Some(quote! { #ty : Default })
+                    } else {
+                        None
+                    }
+                });
+
+                parse_quote! { where #(#type_bounds),* }
+            };
+
+            generics
+                .make_where_clause()
+                .predicates
+                .extend(where_clause.predicates);
+
+            generics
+        } else {
+            generics.clone()
+        };
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+        let default_values = fields.iter().map(|(_, _, _, default)| {
+            default
+                .as_ref()
+                .map_or_else(|| quote! { Default::default() }, |value| quote! { #value })
+        });
+
+        Some(quote! {
+            impl #impl_generics Default for #name  #ty_generics #where_clause {
+                fn default() -> Self {
+                    #name(( #(#default_values),* ))
+                }
+            }
+        })
+    } else if has_type_bound && !has_derive("Default") {
         let generics = append_type_bounds(|ty| quote! { #ty : Default });
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -817,26 +858,38 @@ fn dump_code(expanded: String) {
     stdout().flush().unwrap();
 }
 
-struct DeriveFilter(fn(&syn::NestedMeta) -> bool);
+struct MetaFilter<T>(T)
+where
+    T: Fn(&syn::NestedMeta) -> bool;
 
-impl DeriveFilter {
+impl<T> MetaFilter<T>
+where
+    T: Fn(&syn::NestedMeta) -> bool,
+{
     fn fold_attribute(&mut self, attr: syn::Attribute) -> syn::Attribute {
-        let meta = syn::fold::fold_meta(self, attr.parse_meta().expect("meta"));
+        if let Ok(meta) = attr.parse_meta() {
+            let meta = syn::fold::fold_meta(self, meta);
 
-        syn::Attribute {
-            pound_token: attr.pound_token,
-            style: attr.style,
-            bracket_token: attr.bracket_token,
-            path: Path {
-                leading_colon: None,
-                segments: Punctuated::new(),
-            },
-            tts: quote!(#meta).into_token_stream(),
+            syn::Attribute {
+                pound_token: attr.pound_token,
+                style: attr.style,
+                bracket_token: attr.bracket_token,
+                path: Path {
+                    leading_colon: None,
+                    segments: Punctuated::new(),
+                },
+                tts: quote!(#meta).into_token_stream(),
+            }
+        } else {
+            attr
         }
     }
 }
 
-impl syn::fold::Fold for DeriveFilter {
+impl<T> syn::fold::Fold for MetaFilter<T>
+where
+    T: Fn(&syn::NestedMeta) -> bool,
+{
     fn fold_meta_list(&mut self, meta_list: MetaList) -> MetaList {
         syn::MetaList {
             ident: meta_list.ident,
@@ -844,7 +897,7 @@ impl syn::fold::Fold for DeriveFilter {
             nested: meta_list
                 .nested
                 .into_iter()
-                .filter(|meta| !self.0(meta))
+                .filter(|meta| self.0(meta))
                 .collect(),
         }
     }

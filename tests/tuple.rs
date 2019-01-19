@@ -22,19 +22,23 @@ named_tuple!(
 );
 
 #[cfg(feature = "serde")]
-named_tuple!(    
+named_tuple!(
     #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-    struct Endpoint(host, port = 80);
+    struct Pair(first, second);
 );
 
 #[cfg(not(feature = "serde"))]
-named_tuple!(    
+named_tuple!(
     #[derive(Clone, Copy, Debug, Default)]
-    struct Endpoint(host, port = 80);
+    struct Pair(first, second);
 );
 
 named_tuple!(
-    struct EndpointByRef(host, port = 80);
+    #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+    struct Endpoint<'a> {
+        host: &'a str = "localhost", 
+        port: u16 = 80,
+    }
 );
 
 pub struct Foo {}
@@ -58,9 +62,6 @@ fn test_human() {
     assert_eq!(human.fields(), (("name", "alice"), ("age", 18)));
     assert_eq!(human.field_values(), ("alice", 18));
 
-    assert_eq!(human.name(), "alice");
-    assert_eq!(human.age(), 18);
-
     human.set_name("bob");
     human.set_age(20);
     assert_eq!(("bob", 20), human.into());
@@ -76,8 +77,38 @@ fn test_human_by_ref() {
 }
 
 #[test]
+fn test_pair() {
+    let mut pair: Pair<_, _> = ("foo", "bar").into();
+
+    assert_eq!(pair.first(), "foo");
+    assert_eq!(pair.second(), "bar");
+
+    assert_eq!(pair.field_names(), &["first", "second"]);
+    assert_eq!(pair.fields(), (("first", "foo"), ("second", "bar")));
+    assert_eq!(pair.field_values(), ("foo", "bar"));
+
+    pair.set_first("hello");
+    pair.set_second("world");
+    assert_eq!(("hello", "world"), pair.into());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde() {
+    let pair = Pair::new("foo", "bar");
+
+    let json = serde_json::to_string(&pair).unwrap();
+
+    assert_eq!(json, "[\"foo\",\"bar\"]");
+
+    let pair2: Pair<_, _> = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(pair, pair2);
+}
+
+#[test]
 fn test_endpoint() {
-    let endpoint: Endpoint<_, _> = ("localhost", 80).into(); // From<(...)>
+    let endpoint = Endpoint::default();
 
     let addr = endpoint.to_socket_addrs().unwrap().collect::<Vec<_>>(); // Deref<Target=(...)>
 
@@ -96,18 +127,4 @@ fn test_endpoint() {
             assert_eq!(port, 80);
         }
     }
-}
-
-#[cfg(feature = "serde")]
-#[test]
-fn test_serde() {
-    let endpoint = Endpoint::new("localhost", 80);
-
-    let json = serde_json::to_string(&endpoint).unwrap();
-
-    assert_eq!(json, "[\"localhost\",80]");
-
-    let endpoint2: Endpoint<_, _> = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(endpoint, endpoint2);
 }
