@@ -112,10 +112,7 @@ fn test_endpoint() {
 
     let addr = endpoint.to_socket_addrs().unwrap().collect::<Vec<_>>(); // Deref<Target=(...)>
 
-    assert_eq!(
-        addr,
-        vec!["[::1]:80".parse().unwrap(), "127.0.0.1:80".parse().unwrap()]
-    );
+    assert!(addr.contains(&"127.0.0.1:80".parse().unwrap()));
 
     if endpoint != ("localhost", 443) {
         // PartialEq<(...)>
