@@ -448,6 +448,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         .map(|(idx, (vis, name, field_ty, _))| {
             let getter = &name;
             let setter = Ident::new(&format!("set_{}", name), Span::call_site());
+            let idx = syn::Index::from(idx);
 
             quote! {
                 #vis fn #getter(&self) -> #as_ref #field_ty {
@@ -471,6 +472,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
     };
     let method_with = fields.iter().enumerate().map(|(idx, (_, name, ty, _))| {
         let method_name = Ident::new(&format!("with_{}", name), Span::call_site());
+        let idx = syn::Index::from(idx);
 
         quote! {
             pub fn #method_name(mut self, #name : #ty) -> Self {
@@ -494,8 +496,9 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         });
         let field_values = fields.iter().enumerate().map(|(idx, (_, name, _, _))| {
             let name = name.to_string();
+            let idx = syn::Index::from(idx);
 
-            quote! { (#name, #as_ref ((self.0). #idx) ) }
+            quote! { (#name, #as_ref ((self.0).#idx) ) }
         });
 
         quote! {
@@ -520,6 +523,7 @@ pub fn named_tuple(input: TokenStream) -> TokenStream {
         let struct_name = name.to_string();
         let fields = fields.iter().enumerate().map(|(idx, (_, name, _, _))| {
             let field_name = name.to_string();
+            let idx = syn::Index::from(idx);
 
             quote! {
                 .field(#field_name, &(self.0).#idx)
